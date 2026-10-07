@@ -256,8 +256,9 @@ function decorateReading(data, row) {
     deviceStatus: device ? device.status : '',
     outletCode: outlet ? outlet.code : '',
     counted: monitor.isCounted(row, device, data.settings),
-    concentration: monitor.effectiveConcentration(row, data.settings),
+    concentration: monitor.effectiveConcentration(data, row),
     oxygen: monitor.oxygenAt(data, row),
+    oxygenAssumed: monitor.oxygenAssumed(data, row),
     flow: monitor.flowAt(data, row),
   });
 }

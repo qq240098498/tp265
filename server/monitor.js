@@ -27,15 +27,34 @@ function isCounted(reading, device, settings) {
   return true;
 }
 
-// 口径：折算浓度 = 实测浓度 × (21 − 基准氧) / (21 − 实测氧含量)；氧含量缺失按基准氧处理
-function effectiveConcentration(reading, settings) {
-  return Number(reading.value);
-}
-
 // 小时值里的氧含量（同排放口同时刻的氧含量读数）
 function oxygenAt(data, reading) {
   const row = data.readings.find((r) => r.outletId === reading.outletId && r.metric === '氧含量' && r.at === reading.at);
   return row ? Number(row.value) : null;
+}
+
+// 参与氧含量折算的浓度指标；流量、氧含量本身不折算
+const CONVERTED_METRICS = ['COD', '氨氮'];
+
+// 氧含量读数缺失、按基准氧处理（等价于不折算）的小时，页面要注明
+function oxygenAssumed(data, reading) {
+  if (CONVERTED_METRICS.indexOf(reading.metric) < 0) return false;
+  return oxygenAt(data, reading) === null;
+}
+
+// 口径：折算浓度 = 实测浓度 × (21 − 基准氧) / (21 − 实测氧含量)；氧含量缺失按基准氧处理（等价于不折算）
+// 取数统一走这里：日均、月均、总量、超标判定与报表吃到的都是折算后的浓度
+function effectiveConcentration(data, reading) {
+  const settings = data.settings || {};
+  const value = Number(reading.value);
+  if (CONVERTED_METRICS.indexOf(reading.metric) < 0) return value;
+  const base = Number(settings.oxygenBaseline);
+  if (!Number.isFinite(base)) return value;
+  const stored = oxygenAt(data, reading);
+  const oxygen = stored === null || !Number.isFinite(stored) ? base : stored;
+  const denom = 21 - oxygen;
+  if (denom <= 0) return value;
+  return value * (21 - base) / denom;
 }
 
 function flowAt(data, reading) {
@@ -66,9 +85,10 @@ function dayRows(data, outletId, metric, day) {
       deviceCode: device ? device.code : '',
       deviceStatus: device ? device.status : '',
       oxygen: oxygenAt(data, row),
+      oxygenAssumed: oxygenAssumed(data, row),
       flow: flowAt(data, row),
       counted,
-      concentration: counted ? effectiveConcentration(row, settings) : 0,
+      concentration: counted ? effectiveConcentration(data, row) : 0,
     };
   });
 }
@@ -128,7 +148,7 @@ function monthTotal(data, outletId, metric, month) {
   let mg = 0;
   for (let i = 0; i < concRows.length; i += 1) {
     const flow = flowRows[i] ? Number(flowRows[i].value) : 0;
-    mg += effectiveConcentration(concRows[i], settings) * flow;
+    mg += effectiveConcentration(data, concRows[i]) * flow;
   }
   return store.round(mg / Number(settings.tonsDivisor), 4);
 }
@@ -227,7 +247,7 @@ function outletSummary(data, outletId, month) {
 
 module.exports = {
   plantOf, outletOf, deviceOf,
-  readingsOf, isCounted, effectiveConcentration, oxygenAt, flowAt,
+  readingsOf, isCounted, effectiveConcentration, oxygenAt, oxygenAssumed, flowAt,
   dayRows, dailyStats, dailySeries, monthAverage, monthTotal, quarterTotal, quarterPermitTons, accumulatedTons,
   exceedance, outletsOf, outletSummary,
 };
