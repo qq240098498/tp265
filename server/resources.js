@@ -251,13 +251,36 @@ function listReadings(data, query) {
 function decorateReading(data, row) {
   const device = monitor.deviceOf(data, row.deviceId);
   const outlet = monitor.outletOf(data, row.outletId);
+  const settings = data.settings;
+  const oxygen = monitor.oxygenAt(data, row);
+  const isConc = monitor.CONCENTRATION_METRICS.includes(row.metric);
+  const stopped = !!(outlet && (function () {
+    const plant = monitor.plantOf(data, outlet.plantId);
+    return plant && (outlet.status === '停用' || plant.status === '停产');
+  })());
+  const baseCounted = monitor.isCounted(row, device, settings);
+  const counted = baseCounted && !stopped;
+  const reasons = [];
+  if (!baseCounted) {
+    if (row.flag !== '有效') reasons.push('数据标记为' + row.flag);
+    if (!device) reasons.push('监测设备不存在');
+    else if (device.status !== '正常') reasons.push('设备处于' + device.status);
+    const v = Number(row.value);
+    const lo = Number(settings.rangeMin);
+    const hi = Number(settings.rangeMax);
+    if (Number.isFinite(v) && (v < lo || v > hi)) reasons.push('数值 ' + v + ' 超出量程（' + lo + '~' + hi + '）');
+  }
+  if (stopped) reasons.push(outlet.status === '停用' ? '排放口停用' : '排污单位停产');
   return Object.assign({}, row, {
     deviceCode: device ? device.code : '',
     deviceStatus: device ? device.status : '',
     outletCode: outlet ? outlet.code : '',
-    counted: monitor.isCounted(row, device, data.settings),
-    concentration: monitor.effectiveConcentration(row, data.settings),
-    oxygen: monitor.oxygenAt(data, row),
+    counted,
+    notCountedReason: reasons.join('；'),
+    // 折算后浓度只对浓度类指标有意义，取数层统一折算；流量/氧含量读数返回 null
+    concentration: isConc ? store.round(monitor.effectiveConcentration(row, settings, oxygen), 4) : null,
+    oxygen,
+    oxygenMissing: isConc && oxygen === null,
     flow: monitor.flowAt(data, row),
   });
 }

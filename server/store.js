@@ -8,6 +8,7 @@ const DEFAULT_SETTINGS = {
   oxygenBaseline: 8,
   rangeMin: 0,
   rangeMax: 500,
+  minDailyHours: 18,
   maxImputeHoursPerDay: 6,
   flowWeighted: true,
   hourlyExceedCountLimit: 3,

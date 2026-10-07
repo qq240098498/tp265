@@ -1,5 +1,5 @@
 /* 污染源在线监测与排污总量核算台 —— 纯原生前端
-   显示纪律：除「折算后浓度（页面自算）」外，所有数字直接用接口返回值。 */
+   显示纪律：所有数字（含折算后浓度）直接用接口返回值，前端不做口径计算。 */
 (function () {
   'use strict';
 
@@ -112,17 +112,8 @@
     return { metric: name };
   }
 
-  /* 折算后浓度（页面自算）：实测 × (21 − 基准氧) / (21 − 实测氧含量)，氧含量缺失按 0 代入 */
-  function pageConcentration(row) {
-    var base = (state.settings && state.settings.oxygenBaseline !== null && state.settings.oxygenBaseline !== undefined)
-      ? Number(state.settings.oxygenBaseline) : 8;
-    var oxy = (row.oxygen === null || row.oxygen === undefined || row.oxygen === '') ? 0 : Number(row.oxygen);
-    var denom = 21 - oxy;
-    if (!isFinite(denom) || denom === 0) return null;
-    var value = Number(row.value);
-    if (!isFinite(value)) return null;
-    return value * (21 - base) / denom;
-  }
+  /* 折算后浓度以后端接口 concentration 为准（取数层统一折算）：
+     实测 × (21 − 基准氧) / (21 − 实测氧含量)；该时刻没有有效氧含量读数时按基准氧，等价于不折算。 */
 
   /* ================= 错误提示 ================= */
   var errorBanner = document.getElementById('errorBanner');
@@ -741,7 +732,7 @@
 
   /* ================= 监测数据 ================= */
   function readingRow(r) {
-    var pc = pageConcentration(r);
+    var isConc = MAIN_METRICS.indexOf(r.metric) >= 0;
     var actions = actionsCell([
       actionBtn('修改', function () { openReadingForm(r); }),
       deleteBtn('删除', function () {
@@ -757,16 +748,33 @@
       h('td', {}, h('span', { class: 'tag ' + (r.flag === '有效' ? 'tag-ok' : 'tag-danger'), text: r.flag })),
       h('td', { text: r.source }),
       h('td', { text: textOf(r.operator) }),
-      h('td', {}, h('span', { class: 'tag ' + (r.counted ? 'tag-ok' : 'tag-danger'), text: r.counted ? '计入' : '不计入' })),
-      h('td', { class: 'mono cell-page-conc', dataset: { value: pc === null ? '' : String(pc) }, text: pc === null ? '—' : fmt(pc, 2) }),
-      h('td', { class: 'mono cell-api-conc', dataset: { value: (r.concentration === null || r.concentration === undefined) ? '' : String(r.concentration) }, text: textOf(r.concentration) }),
-      h('td', { class: 'mono', text: textOf(r.oxygen) }),
+      h('td', {}, h('span', {
+        class: 'tag ' + (r.counted ? 'tag-ok' : 'tag-danger'),
+        title: r.counted ? '计入统计' : (r.notCountedReason || '不计入统计'),
+        text: r.counted ? '计入' : '不计入'
+      })),
+      h('td', {
+        class: 'mono cell-api-conc',
+        dataset: { value: (r.concentration === null || r.concentration === undefined) ? '' : String(r.concentration) },
+        text: isConc ? fmt(r.concentration, 2) : '—',
+        title: isConc && r.oxygenMissing ? '该时刻没有有效氧含量读数，按基准氧处理（折算系数=1）' : '取数层按口径折算后的浓度'
+      }),
+      isConc
+        ? (r.oxygenMissing
+          ? h('td', { class: 'mono', title: '该时刻没有有效氧含量读数，按基准氧 ' +
+              ((state.settings && state.settings.oxygenBaseline) || 8) + ' 处理（等价于不折算）' }, [
+              textOf(r.oxygen), ' ', h('span', { class: 'tag tag-warn', text: '缺氧·按基准氧' })
+            ])
+          : h('td', { class: 'mono', text: textOf(r.oxygen) }))
+        : h('td', { class: 'mono', text: textOf(r.oxygen) }),
       h('td', { class: 'mono', text: textOf(r.flow) }),
       actions
     ], function () {
       return h('div', { class: 'detail-grid' }, [
         h('div', { class: 'detail-block' }, [h('h3', { text: '数据 ID' }), h('div', { text: r.id })]),
         h('div', { class: 'detail-block' }, [h('h3', { text: '设备状态' }), h('div', { text: textOf(r.deviceStatus) })]),
+        h('div', { class: 'detail-block' }, [h('h3', { text: '不计入原因' }),
+          h('div', { text: r.counted ? '计入统计' : (r.notCountedReason || '—') })]),
         h('div', { class: 'detail-block' }, [h('h3', { text: '备注' }), h('div', { text: textOf(r.remark) })])
       ]);
     });
@@ -830,13 +838,17 @@
           '共 ', h('b', { text: String(data.total) }), ' 条，已显示前 ', h('b', { text: String(data.returned) }), ' 条（总条数与已显示条数取自接口 total 与 returned）。'
         ]),
         h('div', { class: 'section-note' }, [
-          '「折算后浓度（页面自算）」由本页按 实测 × (21 − 基准氧) / (21 − 氧含量) 计算，氧含量取接口 oxygen，缺失按 0 代入；「接口折算浓度」直接显示接口 concentration。'
+          '「折算后浓度」直接取接口 concentration，由取数层统一按 ',
+          h('b', { text: '实测 × (21 − 基准氧) / (21 − 实测氧含量)' }),
+          ' 折算，日均、月均、总量与超标判定都用它；该时刻没有有效氧含量读数时按基准氧（当前 ',
+          String((state.settings && state.settings.oxygenBaseline) || 8),
+          '）处理，等价于不折算，氧含量列会标注「缺氧·按基准氧」。流量、氧含量指标本身不折算。'
         ]),
         h('div', { class: 'table-wrap' }, h('table', { id: 'tableReadings' }, [
           h('thead', {}, h('tr', {}, [
             h('th', { text: '排放口' }), h('th', { text: '设备' }), h('th', { text: '指标' }), h('th', { text: '时刻' }),
-            h('th', { text: '数值' }), h('th', { text: '标记' }), h('th', { text: '来源' }), h('th', { text: '登记人' }),
-            h('th', { text: '是否计入' }), h('th', { text: '折算后浓度（页面自算）' }), h('th', { text: '接口折算浓度' }),
+            h('th', { text: '数值（实测）' }), h('th', { text: '标记' }), h('th', { text: '来源' }), h('th', { text: '登记人' }),
+            h('th', { text: '是否计入' }), h('th', { text: '折算后浓度' }),
             h('th', { text: '当时氧含量' }), h('th', { text: '当时流量' }), h('th', { text: '操作' })
           ])),
           tb
@@ -901,8 +913,10 @@
       ['年许可量 COD(吨)', fmt(sum.annualPermitCodTons, 4)],
       ['超标天数', textOf(row.exceedDaysCount)],
       ['超标小时数', textOf(row.exceedHours)],
+      ['小时判超', row.hourlyExceed ? '是（≥' + textOf(st.hourlyExceedCountLimit) + '次）' : '否'],
       ['限值', textOf(row.limit)],
       ['超标判定', row.exceeded ? '超标' : '达标'],
+      ['折算基准氧(%)', textOf(sum.oxygenBaseline)],
       ['年累计氨氮(吨)', fmt(sum.accumulatedAmmoniaTons, 4)],
       ['年许可量氨氮(吨)', fmt(st.annualPermitAmmoniaTons, 4)]
     ];
@@ -921,6 +935,16 @@
   function hourlyTable(rows) {
     var tb = h('tbody');
     (rows || []).forEach(function (r) {
+      var oxygenNode = r.oxygenMissing
+        ? h('span', { title: '该时刻没有有效氧含量读数，按基准氧处理（等价于不折算）' }, [
+            textOf(r.oxygen), ' ', h('span', { class: 'tag tag-warn', text: '缺氧' })
+          ])
+        : textOf(r.oxygen);
+      var countedNode = h('span', {
+        class: 'tag ' + (r.counted ? 'tag-ok' : 'tag-danger'),
+        title: r.counted ? '计入统计' : ((r.reasons || []).join('；') || '不计入统计'),
+        text: r.counted ? '计入' : '不计入'
+      });
       tb.appendChild(h('tr', { class: 'row' }, [
         h('td', { class: 'nowrap', text: r.at }),
         h('td', { class: 'mono', text: textOf(r.hour) }),
@@ -929,34 +953,50 @@
         h('td', {}, h('span', { class: 'tag ' + (r.flag === '有效' ? 'tag-ok' : 'tag-danger'), text: r.flag })),
         h('td', { text: textOf(r.deviceCode) }),
         h('td', {}, statusTag(r.deviceStatus, '正常')),
-        h('td', { class: 'mono', text: textOf(r.oxygen) }),
+        h('td', { class: 'mono' }, oxygenNode),
         h('td', { class: 'mono', text: textOf(r.flow) }),
-        h('td', { text: r.counted ? '计入' : '不计入' }),
-        h('td', { class: 'mono', text: textOf(r.concentration) })
+        h('td', {}, countedNode),
+        h('td', {
+          class: 'mono',
+          text: fmt(r.concentration, 2),
+          title: r.oxygenMissing ? '缺氧按基准氧，折算系数=1' : '取数层折算后浓度'
+        })
       ]));
     });
     return h('table', { class: 'mini-table' }, [
       h('thead', {}, h('tr', {}, [
-        h('th', { text: '时刻' }), h('th', { text: '小时' }), h('th', { text: '数值' }), h('th', { text: '来源' }),
+        h('th', { text: '时刻' }), h('th', { text: '小时' }), h('th', { text: '实测值' }), h('th', { text: '来源' }),
         h('th', { text: '标记' }), h('th', { text: '设备' }), h('th', { text: '设备状态' }),
-        h('th', { text: '氧含量' }), h('th', { text: '流量' }), h('th', { text: '是否计入' }), h('th', { text: '接口折算浓度' })
+        h('th', { text: '氧含量' }), h('th', { text: '流量' }), h('th', { text: '是否计入' }), h('th', { text: '折算后浓度' })
       ])),
       tb
     ]);
   }
 
+  function dailyStatusTag(d) {
+    if (!d.valid) return h('span', { class: 'tag tag-warn', title: d.invalidReason || '当日无效', text: '当日不计入' });
+    return h('span', { class: 'tag ' + (d.exceed ? 'tag-danger' : 'tag-ok'), text: d.exceed ? '超标' : '达标' });
+  }
+
   function dailyRow(d, metric) {
+    var statusNode = dailyStatusTag(d);
     return expandableRow([
       h('td', { class: 'nowrap', text: d.day }),
       h('td', { class: 'mono', text: textOf(d.countedHours) }),
       h('td', { class: 'mono', text: textOf(d.imputedHours) }),
-      h('td', { class: 'mono', text: fmt(d.average) }),
+      h('td', { class: 'mono', text: d.valid ? fmt(d.average) : '—' }),
       h('td', { class: 'mono', text: textOf(d.limit) }),
-      h('td', {}, h('span', { class: 'tag ' + (d.exceed ? 'tag-danger' : 'tag-ok'), text: d.exceed ? '超标' : '达标' })),
+      h('td', {}, statusNode),
       h('td', { class: 'mono', text: fmt(d.flowTotal, 1) })
     ], function () {
       var wrap = h('div');
       wrap.appendChild(h('div', { class: 'section-note', text: d.day + ' · ' + metric + ' 逐小时明细（共 ' + ((d.rows || []).length) + ' 小时）' }));
+      if (!d.valid) {
+        wrap.appendChild(h('div', { class: 'section-note' }, [
+          h('span', { class: 'tag tag-warn', text: '该日不计入平均与总量' }), ' 原因：', d.invalidReason || '—'
+        ]));
+      }
+      wrap.appendChild(h('div', { class: 'section-note', text: '日均按小时流量加权；浓度、总量与超标均使用折算后浓度，氧含量标注「缺氧」的小时按基准氧处理。' }));
       wrap.appendChild(h('div', { class: 'table-wrap' }, hourlyTable(d.rows)));
       return wrap;
     });
@@ -1011,9 +1051,10 @@
           series.forEach(function (d) {
             tb.appendChild(h('tr', { class: 'row' }, [
               h('td', { class: 'nowrap', text: d.day }), h('td', { class: 'mono', text: textOf(d.countedHours) }),
-              h('td', { class: 'mono', text: textOf(d.imputedHours) }), h('td', { class: 'mono', text: fmt(d.average) }),
+              h('td', { class: 'mono', text: textOf(d.imputedHours) }),
+              h('td', { class: 'mono', text: d.valid ? fmt(d.average) : '—' }),
               h('td', { class: 'mono', text: textOf(d.limit) }),
-              h('td', {}, h('span', { class: 'tag ' + (d.exceed ? 'tag-danger' : 'tag-ok'), text: d.exceed ? '超标' : '达标' })),
+              h('td', {}, dailyStatusTag(d)),
               h('td', { class: 'mono', text: fmt(d.flowTotal, 1) })
             ]));
           });
@@ -1175,8 +1216,10 @@
   function openSettings() {
     var s = state.settings || {};
     var fields = [
-      { name: 'oxygenBaseline', label: '基准氧含量', type: 'number' },
+      { name: 'oxygenBaseline', label: '基准氧含量（改后历史月份全部重算）', type: 'number' },
+      { name: 'rangeMin', label: '量程下限', type: 'number' },
       { name: 'rangeMax', label: '量程上限', type: 'number' },
+      { name: 'minDailyHours', label: '单日有效小时下限', type: 'number' },
       { name: 'maxImputeHoursPerDay', label: '单日补录上限（小时）', type: 'number' },
       { name: 'codDailyLimit', label: 'COD 日限值', type: 'number' },
       { name: 'ammoniaDailyLimit', label: '氨氮日限值', type: 'number' },
@@ -1195,9 +1238,11 @@
       });
       api('PATCH', '/api/settings', payload).then(function (res) {
         state.settings = res;
-        if (state.summary) state.summary.settings = res;
         closeModal();
-        toast('设置已保存');
+        // 基准氧等口径一改，概览/核算/读数都要按新口径重算：重拉汇总后重绘当前页
+        return reloadCore();
+      }).then(function () {
+        toast('设置已保存，已有数据已按新口径重算');
         switchView(state.view);
       }).catch(showError);
     });
